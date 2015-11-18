@@ -587,17 +587,35 @@ function Chunk_mt:_splice_0copy(target)
 		r.r_ev:set(...)
 	end
 
-	while remain > 0 do
-		local err, rn = source:_splice(w, remain)
-		if err then return err end
-
-		while rn > 0 do
-			local err, wn = r:_splice(target, remain)
-			if err then return err end
-			rn = rn - wn
-			remain = remain - wn
+	-- read end splice
+	self.hub:spawn(function()
+		local toread = remain
+		while toread > 0 do
+			local err, n = source:_splice(w, toread)
+			if err then w:close(); return err end
+			toread = toread - n
 		end
-	end
+	end)
+
+
+	-- write end splice
+	local done = (function()
+		local sender, recver = self.hub:pipe()
+		self.hub:spawn(function()
+			local towrite = remain
+			while towrite > 0 do
+				local err, n = r:_splice(target, towrite)
+				if err then sender:close(); return err end
+				towrite = towrite - n
+			end
+			sender:send(remain)
+			sender:close()
+		end)
+		return recver
+	end)()
+
+	local err = done:recv()
+	if err then return err end
 
 	-- restore target's w_ev
 	target.w_ev.set = target_w_ev_set
